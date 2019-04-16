@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 
 import cv2
 import torch
+import shutil
 from tqdm import tqdm_notebook
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
@@ -13,7 +14,41 @@ from torchvision import models
 from sklearn.model_selection import train_test_split
 from torchvision import transforms
 
-%matplotlib inline
+
+batch_size = 24
+sub_batch_size = 48
+IMG_SIZE = 64
+N_EPOCHS = 10
+ID_COLNAME = 'file_name'
+ANSWER_COLNAME = 'category_id'
+TRAIN_IMGS_DIR = '../input/train_images/'
+TEST_IMGS_DIR = '../input/test_images/'
+TRAIN_LOGGING_EACH = 500
+MODEL_PATH = 'model_best.pth.tar'
+
+train_df_all = pd.read_csv('../input/train.csv')
+train_df, test_df = train_test_split(train_df_all[[ID_COLNAME, ANSWER_COLNAME]],
+                                     test_size=0.15,
+                                     shuffle=True
+                                     )
+CLASSES_TO_USE = train_df_all['category_id'].unique()
+NUM_CLASSES = len(CLASSES_TO_USE)
+CLASSMAP = dict(
+    [(i, j) for i, j
+     in zip(CLASSES_TO_USE, range(NUM_CLASSES))
+     ]
+)
+REVERSE_CLASSMAP = dict([(v, k) for k, v in CLASSMAP.items()])
+
+def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, 'model_best.pth.tar')
+
+def resume_checkpoint(model):
+    checkpoint = torch.load(MODEL_PATH)
+    model.load_state_dict(checkpoint['state_dict'])
+    return model
 
 def kaggle_commit_logger(str_to_log, need_print = True):
     if need_print:
@@ -74,7 +109,7 @@ def validate(model, valid_loader, criterion, need_tqdm=False):
 
         f1_eval = f1_score(all_true_ans, all_preds).item()
 
-    logstr = f'Mean val f1: {round(f1_eval, 5)}'
+    logstr = 'Mean val f1: {round(f1_eval, 5)}'
     kaggle_commit_logger(logstr)
     return test_loss / (step + 1), f1_eval
 
@@ -130,7 +165,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, steps_upd_logging
         total_loss += loss.item()
 
         if (step + 1) % steps_upd_logging == 0:
-            logstr = f'Train loss on step {step + 1} was {round(total_loss / (step + 1), 5)}'
+            logstr = 'Train loss on step {step + 1} was {round(total_loss / (step + 1), 5)}'
             train_tqdm.set_description(logstr)
             kaggle_commit_logger(logstr, need_print=False)
 
@@ -179,3 +214,132 @@ class IMetDataset(Dataset):
 
         else:
             return img, img_id
+
+def train():
+
+
+    model = models.densenet121(pretrained='imagenet')
+    new_head = torch.nn.Linear(model.classifier.in_features, NUM_CLASSES)
+    model.classifier = new_head
+    model.cuda()
+    normalizer = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                      std=[0.229, 0.224, 0.225])
+
+    train_augmentation = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        normalizer,
+    ])
+
+    val_augmentation = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        normalizer,
+    ])
+
+    train_dataset = IMetDataset(train_df, TRAIN_IMGS_DIR, transforms=train_augmentation)
+    test_dataset = IMetDataset(test_df, TRAIN_IMGS_DIR, transforms=val_augmentation)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+
+    criterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
+    sheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3)
+
+    train_losses = []
+    valid_losses = []
+    valid_f1s = []
+    best_model_f1 = 0.0
+    best_model = None
+    best_model_ep = 0
+
+    for epoch in range(1, N_EPOCHS + 1):
+        is_best = False
+        ep_logstr = "Starting {epoch} epoch..."
+        kaggle_commit_logger(ep_logstr)
+        tr_loss = train_one_epoch(model, train_loader, criterion, optimizer, TRAIN_LOGGING_EACH)
+        train_losses.append(tr_loss)
+        tr_loss_logstr = 'Mean train loss: {round(tr_loss,5)}'
+        kaggle_commit_logger(tr_loss_logstr)
+
+        valid_loss, valid_f1 = validate(model, test_loader, criterion)
+        valid_losses.append(valid_loss)
+        valid_f1s.append(valid_f1)
+        val_loss_logstr = 'Mean valid loss: {round(valid_loss,5)}'
+        kaggle_commit_logger(val_loss_logstr)
+        sheduler.step(valid_loss)
+        if epoch%50 == 0:
+            save_checkpoint({
+                'epoch': epoch,
+                'state_dict': model.state_dict(),
+
+            }, is_best)
+        if valid_f1 >= best_model_f1:
+            best_model = model
+            best_model_f1 = valid_f1
+            best_model_ep = epoch
+            is_best = True
+            save_checkpoint({
+                'epoch': best_model_ep,
+                'state_dict': best_model.state_dict(),
+
+            }, is_best)
+
+    bestmodel_logstr = 'Best f1 is {round(best_model_f1, 5)} on epoch {best_model_ep}'
+    kaggle_commit_logger(bestmodel_logstr)
+
+    xs = list(range(1, len(train_losses) + 1))
+
+    plt.plot(xs, train_losses, label='Train loss')
+    # plt.plot(xs, valid_losses, label = 'Val loss');
+    plt.plot(xs, valid_f1s, label='Val f1')
+    plt.legend()
+    plt.xticks(xs)
+    plt.xlabel('Epochs')
+
+def test():
+    normalizer = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                      std=[0.229, 0.224, 0.225])
+    val_augmentation = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        normalizer,
+    ])
+
+    SAMPLE_SUBMISSION_DF = pd.read_csv('../input/sample_submission.csv')
+    SAMPLE_SUBMISSION_DF.rename(columns={'Id': 'file_name', 'Predicted': 'category_id'}, inplace=True)
+    SAMPLE_SUBMISSION_DF['file_name'] = SAMPLE_SUBMISSION_DF['file_name'] + '.jpg'
+
+    subm_dataset = IMetDataset(SAMPLE_SUBMISSION_DF,
+                               TEST_IMGS_DIR,
+                               transforms=val_augmentation,
+                               answer_colname=None
+                               )
+    subm_dataloader = DataLoader(subm_dataset,
+                                 batch_size=sub_batch_size,
+                                 shuffle=False,
+                                 pin_memory=True)
+
+    model = models.densenet121(pretrained='imagenet')
+    new_head = torch.nn.Linear(model.classifier.in_features, NUM_CLASSES)
+    model.classifier = new_head
+    model.cuda()
+
+    best_model = resume_checkpoint(model)
+    best_model.cuda();
+
+    subm_preds, submids = get_subm_answers(best_model, subm_dataloader, True)
+    len(subm_preds)
+    ans_dict = dict(zip(submids, subm_preds.astype(str)))
+
+    df_to_process = (
+        pd.DataFrame
+            .from_dict(ans_dict, orient='index', columns=['Predicted'])
+            .reset_index()
+            .rename({'index': 'Id'}, axis=1)
+    )
+    df_to_process['Id'] = df_to_process['Id'].map(lambda x: str(x)[:-4])
+    df_to_process['Predicted'] = df_to_process['Predicted'].apply(process_one_id)
+    df_to_process.to_csv('submission.csv', index=False)
+
