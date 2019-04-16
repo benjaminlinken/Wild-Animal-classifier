@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
+import argparse
 import cv2
 import torch
 import shutil
@@ -21,12 +22,12 @@ IMG_SIZE = 64
 N_EPOCHS = 10
 ID_COLNAME = 'file_name'
 ANSWER_COLNAME = 'category_id'
-TRAIN_IMGS_DIR = '../input/train_images/'
-TEST_IMGS_DIR = '../input/test_images/'
+TRAIN_IMGS_DIR = '/home/benjamin/test_dir/WILDCAM_dataset/train_images/'
+TEST_IMGS_DIR = '/home/benjamin/test_dir/WILDCAM_dataset/test_images/'
 TRAIN_LOGGING_EACH = 500
 MODEL_PATH = 'model_best.pth.tar'
 
-train_df_all = pd.read_csv('../input/train.csv')
+train_df_all = pd.read_csv('/home/benjamin/test_dir/WILDCAM_dataset/train.csv')
 train_df, test_df = train_test_split(train_df_all[[ID_COLNAME, ANSWER_COLNAME]],
                                      test_size=0.15,
                                      shuffle=True
@@ -307,7 +308,7 @@ def test():
         normalizer,
     ])
 
-    SAMPLE_SUBMISSION_DF = pd.read_csv('../input/sample_submission.csv')
+    SAMPLE_SUBMISSION_DF = pd.read_csv('/home/benjamin/test_dir/WILDCAM_dataset/sample_submission.csv')
     SAMPLE_SUBMISSION_DF.rename(columns={'Id': 'file_name', 'Predicted': 'category_id'}, inplace=True)
     SAMPLE_SUBMISSION_DF['file_name'] = SAMPLE_SUBMISSION_DF['file_name'] + '.jpg'
 
@@ -342,4 +343,23 @@ def test():
     df_to_process['Id'] = df_to_process['Id'].map(lambda x: str(x)[:-4])
     df_to_process['Predicted'] = df_to_process['Predicted'].apply(process_one_id)
     df_to_process.to_csv('submission.csv', index=False)
+
+def main(args):
+    if args.test:
+        test()
+    else:
+        train()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test', default=False, help='test mode')
+    # parser.add_argument('--batch_size',type=int, default=24, help='')
+    # parser.add_argument('--epoch', type=int, default=300, help='')
+    # parser.add_argument('--train_dir', default=None, help='')
+    # parser.add_argument('--test_dir',default=None, help='')
+    # parser.add_argument()
+
+    args = parser.parse_args()
+
+    main(args)
 
