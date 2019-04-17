@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 import argparse
 import cv2
 import torch
+import torch.nn as nn
 import shutil
 from tqdm import tqdm_notebook
 from PIL import Image
@@ -16,8 +17,8 @@ from sklearn.model_selection import train_test_split
 from torchvision import transforms
 
 
-batch_size = 24
-sub_batch_size = 48
+batch_size = 8
+sub_batch_size = 8
 IMG_SIZE = 64
 N_EPOCHS = 10
 ID_COLNAME = 'file_name'
@@ -153,13 +154,15 @@ def train_one_epoch(model, train_loader, criterion, optimizer, steps_upd_logging
     train_tqdm = tqdm_notebook(train_loader)
 
     for step, (features, targets) in enumerate(train_tqdm):
-        features, targets = cuda(features), cuda(targets)
-
-        optimizer.zero_grad()
-
+        features = features.cuda()
+        targets = targets.cuda()
+        # print('features:'+str(features.size()))
+        # print('targets:'+str(targets.size()))
         logits = model(features)
+        # print('logits:'+str(logits.size()))
 
         loss = criterion(logits, targets)
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
@@ -199,13 +202,14 @@ class IMetDataset(Dataset):
         img_id = cur_idx_row[self.id_colname]
         img_name = img_id  # + self.img_ext
         img_path = os.path.join(self.images_dir, img_name)
-
+        # print(img_path)
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(img)
 
         if self.transforms is not None:
             img = self.transforms(img)
+            # print(img.size())
 
         if self.answer_colname is not None:
             label = torch.zeros((self.n_classes,), dtype=torch.float32)
@@ -217,23 +221,26 @@ class IMetDataset(Dataset):
             return img, img_id
 
 def train():
-
-
     model = models.densenet121(pretrained='imagenet')
     new_head = torch.nn.Linear(model.classifier.in_features, NUM_CLASSES)
     model.classifier = new_head
     model.cuda()
+
     normalizer = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                       std=[0.229, 0.224, 0.225])
 
     train_augmentation = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        # transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.Scale(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         normalizer,
     ])
 
     val_augmentation = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.Scale(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         normalizer,
     ])
